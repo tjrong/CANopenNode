@@ -4,50 +4,56 @@
  * @file        CO_Emergency.c
  * @ingroup     CO_Emergency
  * @author      Janez Paternoster
- * @copyright   2004 - 2013 Janez Paternoster
+ * @copyright   2004 - 2020 Janez Paternoster
  *
  * This file is part of CANopenNode, an opensource CANopen Stack.
  * Project home page is <https://github.com/CANopenNode/CANopenNode>.
  * For more information on CANopen see <http://www.can-cia.org/>.
  *
- * CANopenNode is free and open source software: you can redistribute
- * it and/or modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation, either version 2 of the
- * License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * Following clarification and special exception to the GNU General Public
- * License is included to the distribution terms of CANopenNode:
- *
- * Linking this library statically or dynamically with other modules is
- * making a combined work based on this library. Thus, the terms and
- * conditions of the GNU General Public License cover the whole combination.
- *
- * As a special exception, the copyright holders of this library give
- * you permission to link this library with independent modules to
- * produce an executable, regardless of the license terms of these
- * independent modules, and to copy and distribute the resulting
- * executable under terms of your choice, provided that you also meet,
- * for each linked independent module, the terms and conditions of the
- * license of that module. An independent module is a module which is
- * not derived from or based on this library. If you modify this
- * library, you may extend this exception to your version of the
- * library, but you are not obliged to do so. If you do not wish
- * to do so, delete this exception statement from your version.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 
 #include "CO_driver.h"
 #include "CO_SDO.h"
 #include "CO_Emergency.h"
+#include "CANopen.h"
 
+
+/*
+ * Read received message from CAN module.
+ *
+ * Function will be called (by CAN receive interrupt) every time, when CAN
+ * message with correct identifier will be received. For more information and
+ * description of parameters see file CO_driver.h.
+ */
+static void CO_EM_receive(void *object, const CO_CANrxMsg_t *msg){
+    CO_EM_t *em;
+    uint16_t errorCode;
+    uint32_t infoCode;
+
+    em = (CO_EM_t*)object;
+
+    if(em!=NULL && em->pFunctSignalRx!=NULL){
+        CO_memcpySwap2(&errorCode, &msg->data[0]);
+        CO_memcpySwap4(&infoCode, &msg->data[4]);
+        em->pFunctSignalRx(CO_CANrxMsg_readIdent(msg),
+                           errorCode,
+                           msg->data[2],
+                           msg->data[3],
+                           infoCode);
+    }
+}
 
 /*
  * Function for accessing _Pre-Defined Error Field_ (index 0x1003) from SDO server.
@@ -129,15 +135,17 @@ CO_ReturnError_t CO_EM_init(
         uint8_t                *errorRegister,
         uint32_t               *preDefErr,
         uint8_t                 preDefErrSize,
-        CO_CANmodule_t         *CANdev,
+        CO_CANmodule_t         *CANdevRx,
+        uint16_t                CANdevRxIdx,
+        CO_CANmodule_t         *CANdevTx,
         uint16_t                CANdevTxIdx,
         uint16_t                CANidTxEM)
 {
     uint8_t i;
 
     /* verify arguments */
-    if(em==NULL || emPr==NULL || SDO==NULL || errorStatusBits==NULL ||
-        errorStatusBitsSize<6U || errorRegister==NULL || preDefErr==NULL || CANdev==NULL){
+    if(em==NULL || emPr==NULL || SDO==NULL || errorStatusBits==NULL || errorStatusBitsSize<6U ||
+       errorRegister==NULL || preDefErr==NULL || CANdevTx==NULL || CANdevRx==NULL){
         return CO_ERROR_ILLEGAL_ARGUMENT;
     }
 
@@ -150,6 +158,7 @@ CO_ReturnError_t CO_EM_init(
     em->bufFull                 = 0U;
     em->wrongErrorReport        = 0U;
     em->pFunctSignal            = NULL;
+    em->pFunctSignalRx          = NULL;
     emPr->em                    = em;
     emPr->errorRegister         = errorRegister;
     emPr->preDefErr             = preDefErr;
@@ -166,15 +175,25 @@ CO_ReturnError_t CO_EM_init(
     CO_OD_configure(SDO, OD_H1003_PREDEF_ERR_FIELD, CO_ODF_1003, (void*)emPr, 0, 0U);
     CO_OD_configure(SDO, OD_H1014_COBID_EMERGENCY, CO_ODF_1014, (void*)&SDO->nodeId, 0, 0U);
 
+    /* configure SDO server CAN reception */
+    CO_CANrxBufferInit(
+            CANdevRx,               /* CAN device */
+            CANdevRxIdx,            /* rx buffer index */
+            CO_CAN_ID_EMERGENCY,    /* CAN identifier */
+            0x780,                  /* mask */
+            0,                      /* rtr */
+            (void*)em,              /* object passed to receive function */
+            CO_EM_receive);         /* this function will process received message */
+
     /* configure emergency message CAN transmission */
-    emPr->CANdev = CANdev;
+    emPr->CANdev = CANdevTx;
     emPr->CANdev->em = (void*)em; /* update pointer inside CAN device. */
     emPr->CANtxBuff = CO_CANtxBufferInit(
-            CANdev,             /* CAN device */
+            CANdevTx,            /* CAN device */
             CANdevTxIdx,        /* index of specific buffer inside CAN module */
             CANidTxEM,          /* CAN identifier */
             0,                  /* rtr */
-            8U,                  /* number of data bytes */
+            8U,                 /* number of data bytes */
             0);                 /* synchronous message flag bit */
 
     return CO_ERROR_NO;
@@ -193,15 +212,33 @@ void CO_EM_initCallback(
 
 
 /******************************************************************************/
+void CO_EM_initCallbackRx(
+        CO_EM_t                *em,
+        void                  (*pFunctSignalRx)(const uint16_t ident,
+                                                const uint16_t errorCode,
+                                                const uint8_t errorRegister,
+                                                const uint8_t errorBit,
+                                                const uint32_t infoCode))
+{
+    if(em != NULL){
+        em->pFunctSignalRx = pFunctSignalRx;
+    }
+}
+
+
+/******************************************************************************/
 void CO_EM_process(
         CO_EMpr_t              *emPr,
         bool_t                  NMTisPreOrOperational,
         uint16_t                timeDifference_100us,
-        uint16_t                emInhTime)
+        uint16_t                emInhTime,
+        uint16_t               *timerNext_ms)
 {
 
     CO_EM_t *em = emPr->em;
     uint8_t errorRegister;
+    uint8_t errorMask;
+    uint8_t i;
 
     /* verify errors from driver and other */
     CO_CANverifyErrors(emPr->CANdev);
@@ -213,6 +250,7 @@ void CO_EM_process(
 
     /* calculate Error register */
     errorRegister = 0U;
+    errorMask = (uint8_t)~(CO_ERR_REG_GENERIC_ERR | CO_ERR_REG_COMM_ERR | CO_ERR_REG_MANUFACTURER);
     /* generic error */
     if(em->errorStatusBits[5]){
         errorRegister |= CO_ERR_REG_GENERIC_ERR;
@@ -221,7 +259,13 @@ void CO_EM_process(
     if(em->errorStatusBits[2] || em->errorStatusBits[3]){
         errorRegister |= CO_ERR_REG_COMM_ERR;
     }
-    *emPr->errorRegister = (*emPr->errorRegister & 0xEEU) | errorRegister;
+    /* Manufacturer */
+    for(i=6; i<em->errorStatusBitsSize; i++) {
+        if (em->errorStatusBits[i]) {
+            errorRegister |= CO_ERR_REG_MANUFACTURER;
+        }
+    }
+    *emPr->errorRegister = (*emPr->errorRegister & errorMask) | errorRegister;
 
     /* inhibit time */
     if(emPr->inhibitEmTimer < emInhTime){
@@ -231,47 +275,58 @@ void CO_EM_process(
     /* send Emergency message. */
     if(     NMTisPreOrOperational &&
             !emPr->CANtxBuff->bufferFull &&
-            emPr->inhibitEmTimer >= emInhTime &&
             (em->bufReadPtr != em->bufWritePtr || em->bufFull))
     {
         uint32_t preDEF;    /* preDefinedErrorField */
-        
-        /* add error register */
-        em->bufReadPtr[2] = *emPr->errorRegister;
+        uint16_t diff;
 
-        /* copy data to CAN emergency message */
-        CO_memcpy(emPr->CANtxBuff->data, em->bufReadPtr, 8U);
-        CO_memcpy((uint8_t*)&preDEF, em->bufReadPtr, 4U);
-        em->bufReadPtr += 8;
+        if (emPr->inhibitEmTimer >= emInhTime) {
+            /* inhibit time elapsed, send message */
 
-        /* Update read buffer pointer and reset inhibit timer */
-        if(em->bufReadPtr == em->bufEnd){
-            em->bufReadPtr = em->buf;
+            /* add error register */
+            em->bufReadPtr[2] = *emPr->errorRegister;
+
+            /* copy data to CAN emergency message */
+            CO_memcpy(emPr->CANtxBuff->data, em->bufReadPtr, 8U);
+            CO_memcpy((uint8_t*)&preDEF, em->bufReadPtr, 4U);
+            em->bufReadPtr += 8;
+
+            /* Update read buffer pointer and reset inhibit timer */
+            if(em->bufReadPtr == em->bufEnd){
+                em->bufReadPtr = em->buf;
+            }
+            emPr->inhibitEmTimer = 0U;
+
+            /* verify message buffer overflow, then clear full flag */
+            if(em->bufFull == 2U){
+                em->bufFull = 0U;    /* will be updated below */
+                CO_errorReport(em, CO_EM_EMERGENCY_BUFFER_FULL, CO_EMC_GENERIC, 0U);
+            }
+            else{
+                em->bufFull = 0;
+                CO_errorReset(em, CO_EM_EMERGENCY_BUFFER_FULL, 0);
+            }
+
+            /* write to 'pre-defined error field' (object dictionary, index 0x1003) */
+            if(emPr->preDefErr){
+                uint8_t j;
+
+                if(emPr->preDefErrNoOfErrors < emPr->preDefErrSize)
+                    emPr->preDefErrNoOfErrors++;
+                for(j=emPr->preDefErrNoOfErrors-1; j>0; j--)
+                    emPr->preDefErr[j] = emPr->preDefErr[j-1];
+                emPr->preDefErr[0] = preDEF;
+            }
+
+            /* send CAN message */
+            CO_CANsend(emPr->CANdev, emPr->CANtxBuff);
         }
-        emPr->inhibitEmTimer = 0U;
 
-        /* verify message buffer overflow, then clear full flag */
-        if(em->bufFull == 2U){
-            em->bufFull = 0U;    /* will be updated below */
-            CO_errorReport(em, CO_EM_EMERGENCY_BUFFER_FULL, CO_EMC_GENERIC, 0U);
+        /* check again after inhibit time elapsed */
+        diff = (emInhTime + 9) / 10; /* time difference in ms, always round up */
+        if (timerNext_ms != NULL && *timerNext_ms > diff) {
+            *timerNext_ms = diff;
         }
-        else{
-            em->bufFull = 0;
-        }
-
-        /* write to 'pre-defined error field' (object dictionary, index 0x1003) */
-        if(emPr->preDefErr){
-            uint8_t i;
-
-            if(emPr->preDefErrNoOfErrors < emPr->preDefErrSize)
-                emPr->preDefErrNoOfErrors++;
-            for(i=emPr->preDefErrNoOfErrors-1; i>0; i--)
-                emPr->preDefErr[i] = emPr->preDefErr[i-1];
-            emPr->preDefErr[0] = preDEF;
-        }
-
-        /* send CAN message */
-        CO_CANsend(emPr->CANdev, emPr->CANtxBuff);
     }
 
     return;

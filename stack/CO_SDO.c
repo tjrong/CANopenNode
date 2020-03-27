@@ -4,43 +4,23 @@
  * @file        CO_SDO.c
  * @ingroup     CO_SDO
  * @author      Janez Paternoster
- * @copyright   2004 - 2013 Janez Paternoster
+ * @copyright   2004 - 2020 Janez Paternoster
  *
  * This file is part of CANopenNode, an opensource CANopen Stack.
  * Project home page is <https://github.com/CANopenNode/CANopenNode>.
  * For more information on CANopen see <http://www.can-cia.org/>.
  *
- * CANopenNode is free and open source software: you can redistribute
- * it and/or modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation, either version 2 of the
- * License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * Following clarification and special exception to the GNU General Public
- * License is included to the distribution terms of CANopenNode:
- *
- * Linking this library statically or dynamically with other modules is
- * making a combined work based on this library. Thus, the terms and
- * conditions of the GNU General Public License cover the whole combination.
- *
- * As a special exception, the copyright holders of this library give
- * you permission to link this library with independent modules to
- * produce an executable, regardless of the license terms of these
- * independent modules, and to copy and distribute the resulting
- * executable under terms of your choice, provided that you also meet,
- * for each linked independent module, the terms and conditions of the
- * license of that module. An independent module is a module which is
- * not derived from or based on this library. If you modify this
- * library, you may extend this exception to your version of the
- * library, but you are not obliged to do so. If you do not wish
- * to do so, delete this exception statement from your version.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 
@@ -69,6 +49,13 @@ void CO_memcpy(uint8_t dest[], const uint8_t src[], const uint16_t size){
     uint16_t i;
     for(i = 0; i < size; i++){
         dest[i] = src[i];
+    }
+}
+
+void CO_memset(uint8_t dest[], uint8_t c, const uint16_t size){
+    uint16_t i;
+    for(i = 0; i < size; i++){
+        dest[i] = c;
     }
 }
 
@@ -193,7 +180,7 @@ static void CO_SDO_receive(void *object, const CO_CANrxMsg_t *msg){
      * See: https://github.com/CANopenNode/CANopenNode/issues/39 */
 
     /* verify message length and message overflow (previous message was not processed yet) */
-    if((msg->DLC == 8U) && (!SDO->CANrxNew)){
+    if((msg->DLC == 8U) && (!IS_CANrxNew(SDO->CANrxNew))){
         if(SDO->state != CO_SDO_ST_DOWNLOAD_BL_SUBBLOCK) {
             /* copy data and set 'new message' flag */
             SDO->CANrxData[0] = msg->data[0];
@@ -205,7 +192,7 @@ static void CO_SDO_receive(void *object, const CO_CANrxMsg_t *msg){
             SDO->CANrxData[6] = msg->data[6];
             SDO->CANrxData[7] = msg->data[7];
 
-            SDO->CANrxNew = true;
+            SET_CANrxNew(SDO->CANrxNew);
         }
         else {
             /* block download, copy data directly */
@@ -214,6 +201,9 @@ static void CO_SDO_receive(void *object, const CO_CANrxMsg_t *msg){
             SDO->CANrxData[0] = msg->data[0];
             seqno = SDO->CANrxData[0] & 0x7fU;
             SDO->timeoutTimer = 0;
+            /* clear timeout in sub-block transfer indication if set before */
+            if (SDO->timeoutSubblockDownolad)
+                SDO->timeoutSubblockDownolad = false;
 
             /* check correct sequence number. */
             if(seqno == (SDO->sequence + 1U)) {
@@ -228,29 +218,29 @@ static void CO_SDO_receive(void *object, const CO_CANrxMsg_t *msg){
                     if(SDO->bufferOffset >= CO_SDO_BUFFER_SIZE) {
                         /* buffer full, break reception */
                         SDO->state = CO_SDO_ST_DOWNLOAD_BL_SUB_RESP;
-                        SDO->CANrxNew = true;
+                        SET_CANrxNew(SDO->CANrxNew);
                         break;
                     }
                 }
 
-                /* break reception if last segment or block sequence is too large */
+                /* break reception if last segment, block ends or block sequence is too large */
                 if(((SDO->CANrxData[0] & 0x80U) == 0x80U) || (SDO->sequence >= SDO->blksize)) {
                     SDO->state = CO_SDO_ST_DOWNLOAD_BL_SUB_RESP;
-                    SDO->CANrxNew = true;
+                    SET_CANrxNew(SDO->CANrxNew);
                 }
             }
             else if((seqno == SDO->sequence) || (SDO->sequence == 0U)){
                 /* Ignore message, if it is duplicate or if sequence didn't started yet. */
             }
             else {
-                /* seqno is totally wrong, break reception. */
-                SDO->state = CO_SDO_ST_DOWNLOAD_BL_SUB_RESP;
-                SDO->CANrxNew = true;
+                /* seqno is wrong, send response without resetting sequence */
+                SDO->state = CO_SDO_ST_DOWNLOAD_BL_SUB_RESP_2;
+                SET_CANrxNew(SDO->CANrxNew);
             }
         }
 
         /* Optional signal to RTOS, which can resume task, which handles SDO server. */
-        if(SDO->CANrxNew && SDO->pFunctSignal != NULL) {
+        if(IS_CANrxNew(SDO->CANrxNew) && SDO->pFunctSignal != NULL) {
             SDO->pFunctSignal();
         }
     }
@@ -329,7 +319,7 @@ CO_ReturnError_t CO_SDO_init(
     /* Configure object variables */
     SDO->nodeId = nodeId;
     SDO->state = CO_SDO_ST_IDLE;
-    SDO->CANrxNew = false;
+    CLEAR_CANrxNew(SDO->CANrxNew);
     SDO->pFunctSignal = NULL;
 
 
@@ -507,7 +497,7 @@ uint16_t CO_OD_getAttribute(CO_SDO_t *SDO, uint16_t entryNo, uint8_t subIndex){
             attr |= CO_ODA_WRITEABLE;
         }
 
-        if(subIndex == 0U  && exception_1003 == false){
+        if(subIndex == 0U  && !exception_1003){
             /* First subIndex is readonly */
             attr &= ~(CO_ODA_WRITEABLE | CO_ODA_RPDO_MAPABLE);
             attr |= CO_ODA_READABLE;
@@ -530,6 +520,10 @@ void* CO_OD_getDataPointer(CO_SDO_t *SDO, uint16_t entryNo, uint8_t subIndex){
 
     if(object->maxSubIndex == 0U){   /* Object type is Var */
         return object->pData;
+    }
+    else if(object->maxSubIndex < subIndex){
+        /* Object type Array/Record, request is out of bounds */
+        return 0;
     }
     else if(object->attribute != 0U){/* Object type is Array */
         if(subIndex==0){
@@ -630,15 +624,16 @@ uint32_t CO_SDO_readOD(CO_SDO_t *SDO, uint16_t SDOBufferSize){
         ext = &SDO->ODExtensions[SDO->entryNo];
     }
 
+    CO_LOCK_OD();
+
     /* copy data from OD to SDO buffer if not domain */
     if(ODdata != NULL){
-        CO_LOCK_OD();
         while(length--) *(SDObuffer++) = *(ODdata++);
-        CO_UNLOCK_OD();
     }
     /* if domain, Object dictionary function MUST exist */
     else{
         if(ext->pODFunc == NULL){
+            CO_UNLOCK_OD();
             return CO_SDO_AB_DEVICE_INCOMPAT;     /* general internal incompatibility in the device */
         }
     }
@@ -648,14 +643,19 @@ uint32_t CO_SDO_readOD(CO_SDO_t *SDO, uint16_t SDOBufferSize){
     if(ext->pODFunc != NULL){
         uint32_t abortCode = ext->pODFunc(&SDO->ODF_arg);
         if(abortCode != 0U){
+            CO_UNLOCK_OD();
             return abortCode;
         }
 
         /* dataLength (upadted by pODFunc) must be inside limits */
         if((SDO->ODF_arg.dataLength == 0U) || (SDO->ODF_arg.dataLength > SDOBufferSize)){
+            CO_UNLOCK_OD();
             return CO_SDO_AB_DEVICE_INCOMPAT;     /* general internal incompatibility in the device */
         }
     }
+
+    CO_UNLOCK_OD();
+
     SDO->ODF_arg.offset += SDO->ODF_arg.dataLength;
     SDO->ODF_arg.firstSegment = false;
 
@@ -716,6 +716,8 @@ uint32_t CO_SDO_writeOD(CO_SDO_t *SDO, uint16_t length){
     }
 #endif
 
+    CO_LOCK_OD();
+
     /* call Object dictionary function if registered */
     SDO->ODF_arg.reading = false;
     if(SDO->ODExtensions != NULL){
@@ -724,6 +726,7 @@ uint32_t CO_SDO_writeOD(CO_SDO_t *SDO, uint16_t length){
         if(ext->pODFunc != NULL){
             uint32_t abortCode = ext->pODFunc(&SDO->ODF_arg);
             if(abortCode != 0U){
+                CO_UNLOCK_OD();
                 return abortCode;
             }
         }
@@ -737,13 +740,13 @@ uint32_t CO_SDO_writeOD(CO_SDO_t *SDO, uint16_t length){
     }
 
     /* copy data from SDO buffer to OD if not domain */
-    if(ODdata != NULL && exception_1003 == false){
-        CO_LOCK_OD();
+    if((ODdata != NULL) && !exception_1003){
         while(length--){
             *(ODdata++) = *(SDObuffer++);
         }
-        CO_UNLOCK_OD();
     }
+
+    CO_UNLOCK_OD();
 
     return 0;
 }
@@ -757,7 +760,7 @@ static void CO_SDO_abort(CO_SDO_t *SDO, uint32_t code){
     SDO->CANtxBuff->data[3] = SDO->ODF_arg.subIndex;
     CO_memcpySwap4(&SDO->CANtxBuff->data[4], &code);
     SDO->state = CO_SDO_ST_IDLE;
-    SDO->CANrxNew = false;
+    CLEAR_CANrxNew(SDO->CANrxNew);
     CO_CANsend(SDO->CANdevTx, SDO->CANtxBuff);
 }
 
@@ -771,23 +774,22 @@ int8_t CO_SDO_process(
         uint16_t               *timerNext_ms)
 {
     CO_SDO_state_t state = CO_SDO_ST_IDLE;
-    bool_t timeoutSubblockDownolad = false;
     bool_t sendResponse = false;
 
     /* return if idle */
-    if((SDO->state == CO_SDO_ST_IDLE) && (!SDO->CANrxNew)){
+    if((SDO->state == CO_SDO_ST_IDLE) && (!IS_CANrxNew(SDO->CANrxNew))){
         return 0;
     }
 
     /* SDO is allowed to work only in operational or pre-operational NMT state */
     if(!NMTisPreOrOperational){
         SDO->state = CO_SDO_ST_IDLE;
-        SDO->CANrxNew = false;
+        CLEAR_CANrxNew(SDO->CANrxNew);
         return 0;
     }
 
     /* Is something new to process? */
-    if((!SDO->CANtxBuff->bufferFull) && ((SDO->CANrxNew) || (SDO->state == CO_SDO_ST_UPLOAD_BL_SUBBLOCK))){
+    if((!SDO->CANtxBuff->bufferFull) && ((IS_CANrxNew(SDO->CANrxNew)) || (SDO->state == CO_SDO_ST_UPLOAD_BL_SUBBLOCK))){
         uint8_t CCS = SDO->CANrxData[0] >> 5;   /* Client command specifier */
 
         /* reset timeout */
@@ -799,9 +801,9 @@ int8_t CO_SDO_process(
         SDO->CANtxBuff->data[4] = SDO->CANtxBuff->data[5] = SDO->CANtxBuff->data[6] = SDO->CANtxBuff->data[7] = 0;
 
         /* Is abort from client? */
-        if((SDO->CANrxNew) && (SDO->CANrxData[0] == CCS_ABORT)){
+        if((IS_CANrxNew(SDO->CANrxNew)) && (SDO->CANrxData[0] == CCS_ABORT)){
             SDO->state = CO_SDO_ST_IDLE;
-            SDO->CANrxNew = false;
+            CLEAR_CANrxNew(SDO->CANrxNew);
             return -1;
         }
 
@@ -869,9 +871,12 @@ int8_t CO_SDO_process(
         SDO->timeoutTimer += timeDifference_ms;
     }
     if(SDO->timeoutTimer >= SDOtimeoutTime){
-        if((SDO->state == CO_SDO_ST_DOWNLOAD_BL_SUBBLOCK) && (SDO->sequence != 0) && (!SDO->CANtxBuff->bufferFull)){
-            timeoutSubblockDownolad = true;
-            state = CO_SDO_ST_DOWNLOAD_BL_SUB_RESP;
+        if((SDO->state == CO_SDO_ST_DOWNLOAD_BL_SUBBLOCK) && (!SDO->timeoutSubblockDownolad) && (!SDO->CANtxBuff->bufferFull)){
+            /* set indication timeout in sub-block transfer and reset timeout */
+            SDO->timeoutSubblockDownolad = true;
+            SDO->timeoutTimer = 0;
+            /* send response without resetting sequence */
+            state = CO_SDO_ST_DOWNLOAD_BL_SUB_RESP_2;
         }
         else{
             CO_SDO_abort(SDO, CO_SDO_AB_TIMEOUT); /* SDO protocol timed out */
@@ -884,7 +889,7 @@ int8_t CO_SDO_process(
         return 0;
     }
 
-    /* state machine (buffer is freed (SDO->CANrxNew = 0;) at the end) */
+    /* state machine (buffer is freed (CLEAR_CANrxNew()) at the end) */
     switch(state){
         uint32_t abortCode;
         uint16_t len, i;
@@ -939,8 +944,8 @@ int8_t CO_SDO_process(
                         return -1;
                     }
                 }
-                SDO->bufferOffset = 0;
-                SDO->sequence = 0;
+                SDO->bufferOffset = 0U;
+                SDO->sequence = 0U;
                 SDO->state = CO_SDO_ST_DOWNLOAD_SEGMENTED;
                 sendResponse = true;
             }
@@ -980,7 +985,7 @@ int8_t CO_SDO_process(
                     }
 
                     SDO->ODF_arg.dataLength = CO_SDO_BUFFER_SIZE;
-                    SDO->bufferOffset = 0;
+                    SDO->bufferOffset = 0U;
                 }
             }
 
@@ -1042,8 +1047,9 @@ int8_t CO_SDO_process(
                 }
             }
 
-            SDO->bufferOffset = 0;
-            SDO->sequence = 0;
+            SDO->bufferOffset = 0U;
+            SDO->sequence = 0U;
+            SDO->timeoutSubblockDownolad = false;
             SDO->state = CO_SDO_ST_DOWNLOAD_BL_SUBBLOCK;
 
             /* send response */
@@ -1056,15 +1062,19 @@ int8_t CO_SDO_process(
             break;
         }
 
-        case CO_SDO_ST_DOWNLOAD_BL_SUB_RESP:{
-            /* no new message received, SDO timeout occured, try to response */
-            lastSegmentInSubblock = (!timeoutSubblockDownolad &&
+        case CO_SDO_ST_DOWNLOAD_BL_SUB_RESP:
+        case CO_SDO_ST_DOWNLOAD_BL_SUB_RESP_2:{
+            /* check if last segment received */
+            lastSegmentInSubblock = (!SDO->timeoutSubblockDownolad &&
                         ((SDO->CANrxData[0] & 0x80U) == 0x80U)) ? true : false;
 
             /* prepare response */
             SDO->CANtxBuff->data[0] = 0xA2;
             SDO->CANtxBuff->data[1] = SDO->sequence;
-            SDO->sequence = 0;
+
+            /* reset sequence on reception break */
+            if (state == CO_SDO_ST_DOWNLOAD_BL_SUB_RESP)
+                SDO->sequence = 0U;
 
             /* empty buffer in domain data type if not last segment */
             if((SDO->ODF_arg.ODdataStorage == 0) && (SDO->bufferOffset != 0) && !lastSegmentInSubblock){
@@ -1082,7 +1092,7 @@ int8_t CO_SDO_process(
                 }
 
                 SDO->ODF_arg.dataLength = CO_SDO_BUFFER_SIZE;
-                SDO->bufferOffset = 0;
+                SDO->bufferOffset = 0U;
             }
 
             /* blksize */
@@ -1172,8 +1182,8 @@ int8_t CO_SDO_process(
 
                 /* indicate data size, if known */
                 if(SDO->ODF_arg.dataLengthTotal != 0U){
-                    uint32_t len = SDO->ODF_arg.dataLengthTotal;
-                    CO_memcpySwap4(&SDO->CANtxBuff->data[4], &len);
+                    uint32_t dlentot = SDO->ODF_arg.dataLengthTotal;
+                    CO_memcpySwap4(&SDO->CANtxBuff->data[4], &dlentot);
                     SDO->CANtxBuff->data[0] = 0x41U;
                 }
                 else{
@@ -1285,8 +1295,8 @@ int8_t CO_SDO_process(
 
             /* indicate data size, if known */
             if(SDO->ODF_arg.dataLengthTotal != 0U){
-                uint32_t len = SDO->ODF_arg.dataLengthTotal;
-                CO_memcpySwap4(&SDO->CANtxBuff->data[4], &len);
+                uint32_t dlentot = SDO->ODF_arg.dataLengthTotal;
+                CO_memcpySwap4(&SDO->CANtxBuff->data[4], &dlentot);
                 SDO->CANtxBuff->data[0] = 0xC6U;
             }
             else{
@@ -1306,17 +1316,18 @@ int8_t CO_SDO_process(
                 return -1;
             }
 
-            SDO->bufferOffset = 0;
-            SDO->sequence = 0;
+            SDO->bufferOffset = 0U;
+            SDO->sequence = 0U;
             SDO->endOfTransfer = false;
-            SDO->CANrxNew = false;
+            CLEAR_CANrxNew(SDO->CANrxNew);
             SDO->state = CO_SDO_ST_UPLOAD_BL_SUBBLOCK;
             /* continue in next case */
         }
+        // fallthrough
 
         case CO_SDO_ST_UPLOAD_BL_SUBBLOCK:{
             /* is block confirmation received */
-            if(SDO->CANrxNew){
+            if(IS_CANrxNew(SDO->CANrxNew)){
                 uint8_t ackseq;
                 uint16_t j;
 
@@ -1395,12 +1406,12 @@ int8_t CO_SDO_process(
                 SDO->endOfTransfer = false;
 
                 /* clear flag here */
-                SDO->CANrxNew = false;
+                CLEAR_CANrxNew(SDO->CANrxNew);
             }
 
             /* return, if all segments was already transfered or on end of transfer */
             if((SDO->sequence == SDO->blksize) || (SDO->endOfTransfer)){
-                return 1;/* don't clear the SDO->CANrxNew flag, so return directly */
+                return 1;/* don't call CLEAR_CANrxNew, so return directly */
             }
 
             /* reset timeout */
@@ -1436,7 +1447,7 @@ int8_t CO_SDO_process(
                 *timerNext_ms = 0;
             }
 
-            /* don't clear the SDO->CANrxNew flag, so return directly */
+            /* don't call CLEAR_CANrxNew, so return directly */
             return 1;
         }
 
@@ -1450,6 +1461,12 @@ int8_t CO_SDO_process(
             SDO->state = CO_SDO_ST_IDLE;
             break;
         }
+        
+        case CO_SDO_ST_IDLE:
+        {
+            /* Nothing to do it seems */
+            break;
+        }
 
         default:{
             CO_SDO_abort(SDO, CO_SDO_AB_DEVICE_INCOMPAT);/* general internal incompatibility in the device */
@@ -1458,7 +1475,7 @@ int8_t CO_SDO_process(
     }
 
     /* free buffer and send message */
-    SDO->CANrxNew = false;
+    CLEAR_CANrxNew(SDO->CANrxNew);
     if(sendResponse) {
         CO_CANsend(SDO->CANdevTx, SDO->CANtxBuff);
     }

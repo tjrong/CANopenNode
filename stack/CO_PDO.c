@@ -4,43 +4,23 @@
  * @file        CO_PDO.c
  * @ingroup     CO_PDO
  * @author      Janez Paternoster
- * @copyright   2004 - 2013 Janez Paternoster
+ * @copyright   2004 - 2020 Janez Paternoster
  *
  * This file is part of CANopenNode, an opensource CANopen Stack.
  * Project home page is <https://github.com/CANopenNode/CANopenNode>.
  * For more information on CANopen see <http://www.can-cia.org/>.
  *
- * CANopenNode is free and open source software: you can redistribute
- * it and/or modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation, either version 2 of the
- * License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * Following clarification and special exception to the GNU General Public
- * License is included to the distribution terms of CANopenNode:
- *
- * Linking this library statically or dynamically with other modules is
- * making a combined work based on this library. Thus, the terms and
- * conditions of the GNU General Public License cover the whole combination.
- *
- * As a special exception, the copyright holders of this library give
- * you permission to link this library with independent modules to
- * produce an executable, regardless of the license terms of these
- * independent modules, and to copy and distribute the resulting
- * executable under terms of your choice, provided that you also meet,
- * for each linked independent module, the terms and conditions of the
- * license of that module. An independent module is a module which is
- * not derived from or based on this library. If you modify this
- * library, you may extend this exception to your version of the
- * library, but you are not obliged to do so. If you do not wish
- * to do so, delete this exception statement from your version.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 
@@ -50,7 +30,6 @@
 #include "CO_NMT_Heartbeat.h"
 #include "CO_SYNC.h"
 #include "CO_PDO.h"
-#include <string.h>
 
 /*
  * Read received message from CAN module.
@@ -70,7 +49,7 @@ static void CO_PDO_receive(void *object, const CO_CANrxMsg_t *msg){
         (*RPDO->operatingState == CO_NMT_OPERATIONAL) &&
         (msg->DLC >= RPDO->dataLength))
     {
-        if(RPDO->synchronous && RPDO->SYNC->CANrxToggle) {
+        if(RPDO->SYNC && RPDO->synchronous && RPDO->SYNC->CANrxToggle) {
             /* copy data into second buffer and set 'new message' flag */
             RPDO->CANrxData[1][0] = msg->data[0];
             RPDO->CANrxData[1][1] = msg->data[1];
@@ -81,7 +60,7 @@ static void CO_PDO_receive(void *object, const CO_CANrxMsg_t *msg){
             RPDO->CANrxData[1][6] = msg->data[6];
             RPDO->CANrxData[1][7] = msg->data[7];
 
-            RPDO->CANrxNew[1] = true;
+            SET_CANrxNew(RPDO->CANrxNew[1]);
         }
         else {
             /* copy data into default buffer and set 'new message' flag */
@@ -94,7 +73,7 @@ static void CO_PDO_receive(void *object, const CO_CANrxMsg_t *msg){
             RPDO->CANrxData[0][6] = msg->data[6];
             RPDO->CANrxData[0][7] = msg->data[7];
 
-            RPDO->CANrxNew[0] = true;
+            SET_CANrxNew(RPDO->CANrxNew[0]);
         }
     }
 }
@@ -129,7 +108,8 @@ static void CO_RPDOconfigCom(CO_RPDO_t* RPDO, uint32_t COB_IDUsedByRPDO){
     else{
         ID = 0;
         RPDO->valid = false;
-        RPDO->CANrxNew[0] = RPDO->CANrxNew[1] = false;
+        CLEAR_CANrxNew(RPDO->CANrxNew[0]);
+        CLEAR_CANrxNew(RPDO->CANrxNew[1]);
     }
     r = CO_CANrxBufferInit(
             RPDO->CANdevRx,         /* CAN device */
@@ -141,7 +121,8 @@ static void CO_RPDOconfigCom(CO_RPDO_t* RPDO, uint32_t COB_IDUsedByRPDO){
             CO_PDO_receive);        /* this function will process received message */
     if(r != CO_ERROR_NO){
         RPDO->valid = false;
-        RPDO->CANrxNew[0] = RPDO->CANrxNew[1] = false;
+        CLEAR_CANrxNew(RPDO->CANrxNew[0]);
+        CLEAR_CANrxNew(RPDO->CANrxNew[1]);
     }
 }
 
@@ -441,14 +422,16 @@ static CO_SDO_abortCode_t CO_ODF_RPDOcom(CO_ODF_arg_t *ODF_arg){
     /* Reading Object Dictionary variable */
     if(ODF_arg->reading){
         if(ODF_arg->subIndex == 1){
-            uint32_t *value = (uint32_t*) ODF_arg->data;
+            uint32_t value = CO_getUint32(ODF_arg->data);
 
             /* if default COB ID is used, write default value here */
-            if(((*value)&0xFFFF) == RPDO->defaultCOB_ID && RPDO->defaultCOB_ID)
-                *value += RPDO->nodeId;
+            if(((value)&0xFFFF) == RPDO->defaultCOB_ID && RPDO->defaultCOB_ID)
+                value += RPDO->nodeId;
 
             /* If PDO is not valid, set bit 31 */
-            if(!RPDO->valid) *value |= 0x80000000L;
+            if(!RPDO->valid) value |= 0x80000000L;
+
+            CO_setUint32(ODF_arg->data, value);
         }
         return CO_SDO_AB_NONE;
     }
@@ -460,24 +443,25 @@ static CO_SDO_abortCode_t CO_ODF_RPDOcom(CO_ODF_arg_t *ODF_arg){
         return CO_SDO_AB_DATA_DEV_STATE;   /* Data cannot be transferred or stored to the application because of the present device state. */
 
     if(ODF_arg->subIndex == 1){   /* COB_ID */
-        uint32_t *value = (uint32_t*) ODF_arg->data;
+        uint32_t value = CO_getUint32(ODF_arg->data);
 
         /* bits 11...29 must be zero */
-        if(*value & 0x3FFF8000L)
+        if(value & 0x3FFF8000L)
             return CO_SDO_AB_INVALID_VALUE;  /* Invalid value for parameter (download only). */
 
         /* if default COB-ID is being written, write defaultCOB_ID without nodeId */
-        if(((*value)&0xFFFF) == (RPDO->defaultCOB_ID + RPDO->nodeId)){
-            *value &= 0xC0000000L;
-            *value += RPDO->defaultCOB_ID;
+        if(((value)&0xFFFF) == (RPDO->defaultCOB_ID + RPDO->nodeId)){
+            value &= 0xC0000000L;
+            value += RPDO->defaultCOB_ID;
+            CO_setUint32(ODF_arg->data, value);
         }
 
         /* if PDO is valid, bits 0..29 can not be changed */
-        if(RPDO->valid && ((*value ^ RPDO->RPDOCommPar->COB_IDUsedByRPDO) & 0x3FFFFFFFL))
+        if(RPDO->valid && ((value ^ RPDO->RPDOCommPar->COB_IDUsedByRPDO) & 0x3FFFFFFFL))
             return CO_SDO_AB_INVALID_VALUE;  /* Invalid value for parameter (download only). */
 
         /* configure RPDO */
-        CO_RPDOconfigCom(RPDO, *value);
+        CO_RPDOconfigCom(RPDO, value);
     }
     else if(ODF_arg->subIndex == 2){   /* Transmission_type */
         uint8_t *value = (uint8_t*) ODF_arg->data;
@@ -491,7 +475,7 @@ static CO_SDO_abortCode_t CO_ODF_RPDOcom(CO_ODF_arg_t *ODF_arg){
 
         /* Remove old message from second buffer. */
         if(RPDO->synchronous != synchronousPrev) {
-            RPDO->CANrxNew[1] = false;
+            CLEAR_CANrxNew(RPDO->CANrxNew[1]);
         }
     }
 
@@ -514,14 +498,16 @@ static CO_SDO_abortCode_t CO_ODF_TPDOcom(CO_ODF_arg_t *ODF_arg){
     /* Reading Object Dictionary variable */
     if(ODF_arg->reading){
         if(ODF_arg->subIndex == 1){   /* COB_ID */
-            uint32_t *value = (uint32_t*) ODF_arg->data;
+            uint32_t value = CO_getUint32(ODF_arg->data);
 
             /* if default COB ID is used, write default value here */
-            if(((*value)&0xFFFF) == TPDO->defaultCOB_ID && TPDO->defaultCOB_ID)
-                *value += TPDO->nodeId;
+            if(((value)&0xFFFF) == TPDO->defaultCOB_ID && TPDO->defaultCOB_ID)
+                value += TPDO->nodeId;
 
             /* If PDO is not valid, set bit 31 */
-            if(!TPDO->valid) *value |= 0x80000000L;
+            if(!TPDO->valid) value |= 0x80000000L;
+
+            CO_setUint32(ODF_arg->data, value);
         }
         return CO_SDO_AB_NONE;
     }
@@ -533,24 +519,26 @@ static CO_SDO_abortCode_t CO_ODF_TPDOcom(CO_ODF_arg_t *ODF_arg){
         return CO_SDO_AB_DATA_DEV_STATE;   /* Data cannot be transferred or stored to the application because of the present device state. */
 
     if(ODF_arg->subIndex == 1){   /* COB_ID */
-        uint32_t *value = (uint32_t*) ODF_arg->data;
+        uint32_t value = CO_getUint32(ODF_arg->data);
 
         /* bits 11...29 must be zero */
-        if(*value & 0x3FFF8000L)
+        if(value & 0x3FFF8000L)
             return CO_SDO_AB_INVALID_VALUE;  /* Invalid value for parameter (download only). */
 
         /* if default COB-ID is being written, write defaultCOB_ID without nodeId */
-        if(((*value)&0xFFFF) == (TPDO->defaultCOB_ID + TPDO->nodeId)){
-            *value &= 0xC0000000L;
-            *value += TPDO->defaultCOB_ID;
+        if(((value)&0xFFFF) == (TPDO->defaultCOB_ID + TPDO->nodeId)){
+            value &= 0xC0000000L;
+            value += TPDO->defaultCOB_ID;
+
+            CO_setUint32(ODF_arg->data, value);
         }
 
         /* if PDO is valid, bits 0..29 can not be changed */
-        if(TPDO->valid && ((*value ^ TPDO->TPDOCommPar->COB_IDUsedByTPDO) & 0x3FFFFFFFL))
+        if(TPDO->valid && ((value ^ TPDO->TPDOCommPar->COB_IDUsedByTPDO) & 0x3FFFFFFFL))
             return CO_SDO_AB_INVALID_VALUE;  /* Invalid value for parameter (download only). */
 
         /* configure TPDO */
-        CO_TPDOconfigCom(TPDO, *value, TPDO->CANtxBuff->syncFlag);
+        CO_TPDOconfigCom(TPDO, value, TPDO->CANtxBuff->syncFlag);
         TPDO->syncCounter = 255;
     }
     else if(ODF_arg->subIndex == 2){   /* Transmission_type */
@@ -570,9 +558,9 @@ static CO_SDO_abortCode_t CO_ODF_TPDOcom(CO_ODF_arg_t *ODF_arg){
         TPDO->inhibitTimer = 0;
     }
     else if(ODF_arg->subIndex == 5){   /* Event_Timer */
-        uint16_t *value = (uint16_t*) ODF_arg->data;
+        uint16_t value = CO_getUint16(ODF_arg->data);
 
-        TPDO->eventTimer = ((uint32_t) *value) * 1000;
+        TPDO->eventTimer = ((uint32_t) value) * 1000;
     }
     else if(ODF_arg->subIndex == 6){   /* SYNC start value */
         uint8_t *value = (uint8_t*) ODF_arg->data;
@@ -632,7 +620,7 @@ static CO_SDO_abortCode_t CO_ODF_RPDOmap(CO_ODF_arg_t *ODF_arg){
 
     /* mappedObject */
     else{
-        uint32_t *value = (uint32_t*) ODF_arg->data;
+        uint32_t value = CO_getUint32(ODF_arg->data);
         uint8_t* pData;
         uint8_t length = 0;
         uint8_t dummy = 0;
@@ -644,7 +632,7 @@ static CO_SDO_abortCode_t CO_ODF_RPDOmap(CO_ODF_arg_t *ODF_arg){
         /* verify if mapping is correct */
         return CO_PDOfindMap(
                 RPDO->SDO,
-               *value,
+                value,
                 0,
                &pData,
                &length,
@@ -698,7 +686,7 @@ static CO_SDO_abortCode_t CO_ODF_TPDOmap(CO_ODF_arg_t *ODF_arg){
 
     /* mappedObject */
     else{
-        uint32_t *value = (uint32_t*) ODF_arg->data;
+        uint32_t value = CO_getUint32(ODF_arg->data);
         uint8_t* pData;
         uint8_t length = 0;
         uint8_t dummy = 0;
@@ -710,7 +698,7 @@ static CO_SDO_abortCode_t CO_ODF_TPDOmap(CO_ODF_arg_t *ODF_arg){
         /* verify if mapping is correct */
         return CO_PDOfindMap(
                 TPDO->SDO,
-               *value,
+                value,
                 1,
                &pData,
                &length,
@@ -740,7 +728,7 @@ CO_ReturnError_t CO_RPDO_init(
         uint16_t                CANdevRxIdx)
 {
     /* verify arguments */
-    if(RPDO==NULL || em==NULL || SDO==NULL || SYNC==NULL || operatingState==NULL ||
+    if(RPDO==NULL || em==NULL || SDO==NULL || operatingState==NULL ||
         RPDOCommPar==NULL || RPDOMapPar==NULL || CANdevRx==NULL){
         return CO_ERROR_ILLEGAL_ARGUMENT;
     }
@@ -761,7 +749,8 @@ CO_ReturnError_t CO_RPDO_init(
     CO_OD_configure(SDO, idx_RPDOMapPar, CO_ODF_RPDOmap, (void*)RPDO, 0, 0);
 
     /* configure communication and mapping */
-    RPDO->CANrxNew[0] = RPDO->CANrxNew[1] = false;
+    CLEAR_CANrxNew(RPDO->CANrxNew[0]);
+    CLEAR_CANrxNew(RPDO->CANrxNew[1]);
     RPDO->CANdevRx = CANdevRx;
     RPDO->CANdevRxIdx = CANdevRxIdx;
 
@@ -777,6 +766,7 @@ CO_ReturnError_t CO_TPDO_init(
         CO_TPDO_t              *TPDO,
         CO_EM_t                *em,
         CO_SDO_t               *SDO,
+        CO_SYNC_t              *SYNC,
         uint8_t                *operatingState,
         uint8_t                 nodeId,
         uint16_t                defaultCOB_ID,
@@ -797,6 +787,7 @@ CO_ReturnError_t CO_TPDO_init(
     /* Configure object variables */
     TPDO->em = em;
     TPDO->SDO = SDO;
+    TPDO->SYNC = SYNC;
     TPDO->TPDOCommPar = TPDOCommPar;
     TPDO->TPDOMapPar = TPDOMapPar;
     TPDO->operatingState = operatingState;
@@ -840,14 +831,14 @@ uint8_t CO_TPDOisCOS(CO_TPDO_t *TPDO){
     ppODdataByte = &TPDO->mapPointer[TPDO->dataLength];
 
     switch(TPDO->dataLength){
-        case 8: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x80)) return 1;
-        case 7: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x40)) return 1;
-        case 6: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x20)) return 1;
-        case 5: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x10)) return 1;
-        case 4: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x08)) return 1;
-        case 3: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x04)) return 1;
-        case 2: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x02)) return 1;
-        case 1: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x01)) return 1;
+        case 8: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x80)) return 1; // fallthrough
+        case 7: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x40)) return 1; // fallthrough
+        case 6: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x20)) return 1; // fallthrough
+        case 5: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x10)) return 1; // fallthrough
+        case 4: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x08)) return 1; // fallthrough
+        case 3: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x04)) return 1; // fallthrough
+        case 2: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x02)) return 1; // fallthrough
+        case 1: if(*(--pPDOdataByte) != **(--ppODdataByte) && (TPDO->sendIfCOSFlags&0x01)) return 1; // fallthrough
     }
 
     return 0;
@@ -882,7 +873,7 @@ int16_t CO_TPDOsend(CO_TPDO_t *TPDO){
             ODF_arg.object = ext->object;
             ODF_arg.attribute = CO_OD_getAttribute(pSDO, entryNo, subIndex);
             ODF_arg.pFlags = CO_OD_getFlagsPointer(pSDO, entryNo, subIndex);
-            ODF_arg.data = pSDO->OD[entryNo].pData;
+            ODF_arg.data = CO_OD_getDataPointer(pSDO, entryNo, subIndex); //https://github.com/CANopenNode/CANopenNode/issues/100
             ODF_arg.dataLength = CO_OD_getLength(pSDO, entryNo, subIndex);
             ext->pODFunc(&ODF_arg);
         }
@@ -908,18 +899,23 @@ void CO_RPDO_process(CO_RPDO_t *RPDO, bool_t syncWas){
 
     if(!RPDO->valid || !(*RPDO->operatingState == CO_NMT_OPERATIONAL))
     {
-        RPDO->CANrxNew[0] = RPDO->CANrxNew[1] = false;
+        CLEAR_CANrxNew(RPDO->CANrxNew[0]);
+        CLEAR_CANrxNew(RPDO->CANrxNew[1]);
     }
     else if(!RPDO->synchronous || syncWas)
     {
+#if defined(RPDO_CALLS_EXTENSION)
+        bool_t update = false;
+#endif /* defined(RPDO_CALLS_EXTENSION) */
+
         uint8_t bufNo = 0;
 
         /* Determine, which of the two rx buffers, contains relevant message. */
-        if(RPDO->synchronous && !RPDO->SYNC->CANrxToggle) {
+        if(RPDO->SYNC && RPDO->synchronous && !RPDO->SYNC->CANrxToggle) {
             bufNo = 1;
         }
 
-        while(RPDO->CANrxNew[bufNo]){
+        while(IS_CANrxNew(RPDO->CANrxNew[bufNo])){
             int16_t i;
             uint8_t* pPDOdataByte;
             uint8_t** ppODdataByte;
@@ -930,40 +926,43 @@ void CO_RPDO_process(CO_RPDO_t *RPDO, bool_t syncWas){
 
             /* Copy data to Object dictionary. If between the copy operation CANrxNew
              * is set to true by receive thread, then copy the latest data again. */
-            RPDO->CANrxNew[bufNo] = false;
+            CLEAR_CANrxNew(RPDO->CANrxNew[bufNo]);
             for(; i>0; i--) {
                 **(ppODdataByte++) = *(pPDOdataByte++);
             }
-
-#ifdef RPDO_CALLS_EXTENSION
-            if(RPDO->SDO->ODExtensions){
-                /* for each mapped OD, check mapping to see if an OD extension is available, and call it if it is */
-                const uint32_t* pMap = &RPDO->RPDOMapPar->mappedObject1;
-                CO_SDO_t *pSDO = RPDO->SDO;
-
-                for(i=RPDO->RPDOMapPar->numberOfMappedObjects; i>0; i--){
-                    uint32_t map = *(pMap++);
-                    uint16_t index = (uint16_t)(map>>16);
-                    uint8_t subIndex = (uint8_t)(map>>8);
-                    uint16_t entryNo = CO_OD_find(pSDO, index);
-                    if ( entryNo == 0xFFFF ) continue;
-                    CO_OD_extension_t *ext = &pSDO->ODExtensions[entryNo];
-                    if( ext->pODFunc == NULL) continue;
-                    CO_ODF_arg_t ODF_arg;
-                    memset((void*)&ODF_arg, 0, sizeof(CO_ODF_arg_t));
-                    ODF_arg.reading = false;
-                    ODF_arg.index = index;
-                    ODF_arg.subIndex = subIndex;
-                    ODF_arg.object = ext->object;
-                    ODF_arg.attribute = CO_OD_getAttribute(pSDO, entryNo, subIndex);
-                    ODF_arg.pFlags = CO_OD_getFlagsPointer(pSDO, entryNo, subIndex);
-                    ODF_arg.data = pSDO->OD[entryNo].pData;
-                    ODF_arg.dataLength = CO_OD_getLength(pSDO, entryNo, subIndex);
-                    ext->pODFunc(&ODF_arg);
-                }
-            }
-#endif
+#if defined(RPDO_CALLS_EXTENSION)
+            update = true;
+#endif /* defined(RPDO_CALLS_EXTENSION) */
         }
+#ifdef RPDO_CALLS_EXTENSION
+        if(update && RPDO->SDO->ODExtensions){
+            int16_t i;
+            /* for each mapped OD, check mapping to see if an OD extension is available, and call it if it is */
+            const uint32_t* pMap = &RPDO->RPDOMapPar->mappedObject1;
+            CO_SDO_t *pSDO = RPDO->SDO;
+
+            for(i=RPDO->RPDOMapPar->numberOfMappedObjects; i>0; i--){
+                uint32_t map = *(pMap++);
+                uint16_t index = (uint16_t)(map>>16);
+                uint8_t subIndex = (uint8_t)(map>>8);
+                uint16_t entryNo = CO_OD_find(pSDO, index);
+                if ( entryNo == 0xFFFF ) continue;
+                CO_OD_extension_t *ext = &pSDO->ODExtensions[entryNo];
+                if( ext->pODFunc == NULL) continue;
+                CO_ODF_arg_t ODF_arg;
+                memset((void*)&ODF_arg, 0, sizeof(CO_ODF_arg_t));
+                ODF_arg.reading = false;
+                ODF_arg.index = index;
+                ODF_arg.subIndex = subIndex;
+                ODF_arg.object = ext->object;
+                ODF_arg.attribute = CO_OD_getAttribute(pSDO, entryNo, subIndex);
+                ODF_arg.pFlags = CO_OD_getFlagsPointer(pSDO, entryNo, subIndex);
+                ODF_arg.data = CO_OD_getDataPointer(pSDO, entryNo, subIndex); //https://github.com/CANopenNode/CANopenNode/issues/100
+                ODF_arg.dataLength = CO_OD_getLength(pSDO, entryNo, subIndex);
+                ext->pODFunc(&ODF_arg);
+            }
+        }
+#endif
     }
 }
 
@@ -971,7 +970,6 @@ void CO_RPDO_process(CO_RPDO_t *RPDO, bool_t syncWas){
 /******************************************************************************/
 void CO_TPDO_process(
         CO_TPDO_t              *TPDO,
-        CO_SYNC_t              *SYNC,
         bool_t                  syncWas,
         uint32_t                timeDifference_us)
 {
@@ -989,7 +987,7 @@ void CO_TPDO_process(
         }
 
         /* Synchronous PDOs */
-        else if(SYNC && syncWas){
+        else if(TPDO->SYNC && syncWas){
             /* send synchronous acyclic PDO */
             if(TPDO->TPDOCommPar->transmissionType == 0){
                 if(TPDO->sendRequest) CO_TPDOsend(TPDO);
@@ -998,14 +996,14 @@ void CO_TPDO_process(
             else{
                 /* is the start of synchronous TPDO transmission */
                 if(TPDO->syncCounter == 255){
-                    if(SYNC->counterOverflowValue && TPDO->TPDOCommPar->SYNCStartValue)
+                    if(TPDO->SYNC->counterOverflowValue && TPDO->TPDOCommPar->SYNCStartValue)
                         TPDO->syncCounter = 254;   /* SYNCStartValue is in use */
                     else
                         TPDO->syncCounter = TPDO->TPDOCommPar->transmissionType;
                 }
                 /* if the SYNCStartValue is in use, start first TPDO after SYNC with matched SYNCStartValue. */
                 if(TPDO->syncCounter == 254){
-                    if(SYNC->counter == TPDO->TPDOCommPar->SYNCStartValue){
+                    if(TPDO->SYNC->counter == TPDO->TPDOCommPar->SYNCStartValue){
                         TPDO->syncCounter = TPDO->TPDOCommPar->transmissionType;
                         CO_TPDOsend(TPDO);
                     }

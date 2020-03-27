@@ -3,49 +3,32 @@
  *
  * @file        CO_trace.c
  * @author      Janez Paternoster
- * @copyright   2016 Janez Paternoster
+ * @copyright   2016 - 2020 Janez Paternoster
  *
  * This file is part of CANopenNode, an opensource CANopen Stack.
  * Project home page is <https://github.com/CANopenNode/CANopenNode>.
  * For more information on CANopen see <http://www.can-cia.org/>.
  *
- * CANopenNode is free and open source software: you can redistribute
- * it and/or modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation, either version 2 of the
- * License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * Following clarification and special exception to the GNU General Public
- * License is included to the distribution terms of CANopenNode:
- *
- * Linking this library statically or dynamically with other modules is
- * making a combined work based on this library. Thus, the terms and
- * conditions of the GNU General Public License cover the whole combination.
- *
- * As a special exception, the copyright holders of this library give
- * you permission to link this library with independent modules to
- * produce an executable, regardless of the license terms of these
- * independent modules, and to copy and distribute the resulting
- * executable under terms of your choice, provided that you also meet,
- * for each linked independent module, the terms and conditions of the
- * license of that module. An independent module is a module which is
- * not derived from or based on this library. If you modify this
- * library, you may extend this exception to your version of the
- * library, but you are not obliged to do so. If you do not wish
- * to do so, delete this exception statement from your version.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 
 #include "CO_trace.h"
-#include <stdio.h>
 
+#if CO_NO_TRACE > 0
+
+#include <stdio.h>
+#include <inttypes.h>
 
 /* Different functions for processing value for different data types. */
 static int32_t getValueI8 (void *OD_variable) { return (int32_t) *((int8_t*)   OD_variable);}
@@ -58,10 +41,10 @@ static int32_t getValueU32(void *OD_variable) { return           *((int32_t*)  O
 
 /* Different functions for printing points for different data types. */
 static uint32_t printPointCsv(char *s, uint32_t size, uint32_t timeStamp, int32_t value) {
-    return snprintf(s, size, "%lu;%ld\n", timeStamp,             value);
+    return snprintf(s, size, "%" PRIu32 ";%" PRId32 "\n", timeStamp,              value);
 }
 static uint32_t printPointCsvUnsigned(char *s, uint32_t size, uint32_t timeStamp, int32_t value) {
-    return snprintf(s, size, "%lu;%lu\n", timeStamp, (uint32_t)  value);
+    return snprintf(s, size, "%" PRIu32 ";%" PRIu32 "\n", timeStamp, (uint32_t)   value);
 }
 static uint32_t printPointBinary(char *s, uint32_t size, uint32_t timeStamp, int32_t value) {
     if(size < 8) return 0;
@@ -70,16 +53,16 @@ static uint32_t printPointBinary(char *s, uint32_t size, uint32_t timeStamp, int
     return 8;
 }
 static uint32_t printPointSvgStart(char *s, uint32_t size, uint32_t timeStamp, int32_t value) {
-    return snprintf(s, size, "M%lu,%ld", timeStamp,             value);
+    return snprintf(s, size, "M%" PRIu32 ",%" PRId32, timeStamp,             value);
 }
 static uint32_t printPointSvgStartUnsigned(char *s, uint32_t size, uint32_t timeStamp, int32_t value) {
-    return snprintf(s, size, "M%lu,%lu", timeStamp, (uint32_t)  value);
+    return snprintf(s, size, "M%" PRIu32 ",%" PRIu32, timeStamp, (uint32_t)  value);
 }
 static uint32_t printPointSvg(char *s, uint32_t size, uint32_t timeStamp, int32_t value) {
-    return snprintf(s, size, "H%luV%ld", timeStamp,             value);
+    return snprintf(s, size, "H%" PRIu32 "V%" PRId32, timeStamp,             value);
 }
 static uint32_t printPointSvgUnsigned(char *s, uint32_t size, uint32_t timeStamp, int32_t value) {
-    return snprintf(s, size, "H%luV%lu", timeStamp, (uint32_t)  value);
+    return snprintf(s, size, "H%" PRIu32 "V%" PRIu32, timeStamp, (uint32_t)  value);
 }
 
 
@@ -115,7 +98,7 @@ static void findVariable(CO_trace_t *trace) {
     uint8_t subIndex;
     uint8_t dataLen;
     void *OdDataPtr = NULL;
-    int dtIndex = 0;
+    unsigned dtIndex = 0;
 
     /* parse mapping */
     index = (uint16_t) ((*trace->map) >> 16);
@@ -520,3 +503,5 @@ void CO_trace_process(CO_trace_t *trace, uint32_t timestamp) {
         trace->lastTimeStamp = timestamp;
     }
 }
+
+#endif /* CO_NO_TRACE */
