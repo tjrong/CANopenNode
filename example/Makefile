@@ -1,13 +1,13 @@
-# Makefile for CANopenNode with Linux socketCAN
+# Makefile for CANopenNode, basic compile with blank CAN device
 
 
-DRV_SRC = socketCAN
-CANOPEN_SRC = .
-OD_SRC = example
-APPL_SRC = socketCAN
+DRV_SRC = .
+CANOPEN_SRC = ..
+OD_SRC = .
+APPL_SRC = .
 
 
-LINK_TARGET = canopend
+LINK_TARGET = canopennode_blank
 
 
 INCLUDE_DIRS = \
@@ -18,10 +18,8 @@ INCLUDE_DIRS = \
 
 
 SOURCES = \
-	$(DRV_SRC)/CO_driver.c \
-	$(DRV_SRC)/CO_error.c \
-	$(DRV_SRC)/CO_epoll_interface.c \
-	$(DRV_SRC)/CO_OD_storage.c \
+	$(DRV_SRC)/CO_driver_blank.c \
+	$(DRV_SRC)/eeprom.c \
 	$(CANOPEN_SRC)/301/CO_SDOserver.c \
 	$(CANOPEN_SRC)/301/CO_Emergency.c \
 	$(CANOPEN_SRC)/301/CO_NMT_Heartbeat.c \
@@ -41,16 +39,14 @@ SOURCES = \
 	$(CANOPEN_SRC)/extra/CO_trace.c \
 	$(CANOPEN_SRC)/CANopen.c \
 	$(OD_SRC)/CO_OD.c \
-	$(APPL_SRC)/CO_main_basic.c
+	$(APPL_SRC)/main_blank.c
 
 
 OBJS = $(SOURCES:%.c=%.o)
 CC ?= gcc
 OPT = -g -DCO_VERSION_MAJOR=2
-#OPT = -g -DCO_VERSION_MAJOR=2 -DCO_SINGLE_THREAD
 CFLAGS = -Wall $(OPT) $(INCLUDE_DIRS)
-LDFLAGS = -pthread
-#LDFLAGS =
+LDFLAGS =
 
 
 .PHONY: all clean
